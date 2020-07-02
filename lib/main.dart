@@ -1,6 +1,10 @@
 import 'dart:io';
 
 import 'package:flutter/material.dart';
+import 'package:flutter_apprtc/apprtc/apprtc_client.dart';
+import 'package:flutter_apprtc/apprtc/peer_connection_client.dart';
+import 'package:flutter_apprtc/apprtc/websocket_rtc_client.dart';
+import 'package:flutter_webrtc/webrtc.dart';
 
 void main() {
   runApp(MyApp());
@@ -51,13 +55,62 @@ class MyHomePage extends StatefulWidget {
   _MyHomePageState createState() => _MyHomePageState();
 }
 
-class _MyHomePageState extends State<MyHomePage> {
+class _MyHomePageState extends State<MyHomePage>
+    implements SignalingEvents, PeerConnectionEvents {
   TextEditingController _roomIdController;
+  List<String> _logs;
+  bool _calling;
+  String _button;
+  IconData _icon;
+
+  RTCVideoRenderer _renderer;
+
+  AppRTCClient _client;
+  PeerConnectionClient _conn;
 
   @override
   void initState() {
     super.initState();
+    _logs = <String>[];
+    _setCalling(false);
+    _renderer = RTCVideoRenderer()..initialize();
+    _client = WebSocketRTCClient(this);
+    _conn = PeerConnectionClient(
+        _renderer,
+        PeerConnectionParameters(
+          videoCallEnabled: true,
+          loopback: false,
+          tracing: false,
+          videoWidth: 720,
+          videoHeight: 1280,
+        ),
+        this);
     _roomIdController = TextEditingController();
+  }
+
+  void _setCalling(bool calling) {
+    if (calling != _calling) {
+      _calling = calling;
+
+      if (calling != null) {
+        if (calling) {
+          _button = "Hang Up";
+          _icon = Icons.call_end;
+        } else {
+          _button = "Call";
+          _icon = Icons.call;
+        }
+      }
+    }
+  }
+
+  @override
+  void dispose() {
+    _stream?.dispose();
+    _renderer.dispose();
+    _conn.close();
+    _client.disconnectFromRoom();
+    super.dispose();
   }
 
   @override
@@ -94,11 +147,180 @@ class _MyHomePageState extends State<MyHomePage> {
           // horizontal).
           mainAxisAlignment: MainAxisAlignment.center,
           children: <Widget>[
-            TextField(controller: _roomIdController,),
-            OutlineButton.icon(onPressed: () {}, icon: Icon(Icons.call), label: Text("Call")),
+            Row(
+              children: <Widget>[
+                Expanded(
+                  child: TextField(
+                    controller: _roomIdController,
+                  ),
+                ),
+                OutlineButton.icon(
+                  onPressed: _calling == null
+                      ? null
+                      : () {
+                          if (_calling) {
+                            _hangUp();
+                            return;
+                          }
+                          final text = _roomIdController.text;
+                          if (text.isEmpty) {
+                            return;
+                          }
+                          _makeCall();
+                        },
+                  icon: Icon(_icon),
+                  label: Text(_button),
+                ),
+              ],
+            ),
+            SizedBox(height: 16),
+            Expanded(
+              child: Stack(
+                children: <Widget>[
+                  RTCVideoView(_renderer),
+                  ListView.builder(
+                    itemBuilder: (context, i) => Text(_logs[i]),
+                    itemCount: _logs.length,
+                  ),
+                ],
+              ),
+            ),
           ],
         ),
       ),
     );
+  }
+
+  void _makeCall() {
+    _client.connectToRoom(RoomConnectionParameters.simple(
+        "https://appr.tc", _roomIdController.text, false));
+    setState(() {
+      _calling = null;
+    });
+  }
+
+  void _hangUp() {
+    _client.disconnectFromRoom();
+    _stream?.dispose();
+    _renderer.srcObject = null;
+  }
+
+  @override
+  void onChannelClose() {
+    setState(() {
+      _setCalling(false);
+      _logs.add("onChannelClose");
+    });
+  }
+
+  @override
+  void onChannelError(String description) {
+    setState(() {
+      _setCalling(false);
+      _logs.add("onChannelError: $description");
+    });
+  }
+
+  MediaStream _stream;
+
+  @override
+  void onConnectedToRoom(SignalingParameters params) {
+    if (!mounted) return;
+    try {
+      final Map<String, dynamic> mediaConstraints = {
+        "audio": false,
+        "video": {
+          "mandatory": {
+            "minWidth": '640',
+            // Provide your own width, height and frame rate here
+            "minHeight": '480',
+            "minFrameRate": '30',
+          },
+          "facingMode": "user",
+          "optional": [],
+        }
+      };
+      navigator.getDisplayMedia(mediaConstraints).then((stream) {
+        _stream = stream;
+        _renderer.srcObject = _stream;
+      });
+    } catch (e) {
+      print(e.toString());
+    }
+    setState(() {
+      _setCalling(true);
+      _logs.add("onConnectedToRoom: ");
+    });
+  }
+
+  @override
+  void onRemoteDescription(RTCSessionDescription sdp) {
+    setState(() {
+      _logs.add("onRemoteDescription");
+    });
+  }
+
+  @override
+  void onRemoteIceCandidate(RTCIceCandidate candidate) {
+    setState(() {
+      _logs.add("onRemoteIceCandidate");
+    });
+  }
+
+  @override
+  void onRemoteIceCandidatesRemoved(List<RTCIceCandidate> candidates) {
+    setState(() {
+      _logs.add("onRemoteIceCandidatesRemoved");
+    });
+  }
+
+  @override
+  void onConnected() {
+    // TODO: implement onConnected
+  }
+
+  @override
+  void onDisconnected() {
+    // TODO: implement onDisconnected
+  }
+
+  @override
+  void onIceCandidate(RTCIceCandidate candidate) {
+    // TODO: implement onIceCandidate
+  }
+
+  @override
+  void onIceCandidatesRemoved(List<RTCIceCandidate> candidates) {
+    // TODO: implement onIceCandidatesRemoved
+  }
+
+  @override
+  void onIceConnected() {
+    // TODO: implement onIceConnected
+  }
+
+  @override
+  void onIceDisconnected() {
+    // TODO: implement onIceDisconnected
+  }
+
+  @override
+  void onLocalDescription(RTCSessionDescription sdp) {
+    // TODO: implement onLocalDescription
+  }
+
+  @override
+  void onPeerConnectionClosed() {
+    // TODO: implement onPeerConnectionClosed
+  }
+
+  @override
+  void onPeerConnectionError(String description) {
+    // TODO: implement onPeerConnectionError
+  }
+
+  @override
+  void onPeerConnectionStatsReady(List<StatsReport> reports) {
+    // TODO: implement onPeerConnectionStatsReady
   }
 }
