@@ -1,4 +1,7 @@
 import 'package:flutter_webrtc/webrtc.dart';
+import 'package:flutter_webrtc/rtc_peerconnection_factory.dart'
+    if (dart.library.js) 'package:flutter_webrtc/web/rtc_peerconnection_factory.dart'
+    as f;
 
 import 'apprtc_client.dart';
 
@@ -87,8 +90,6 @@ class PeerConnectionClient {
   /*private*/
   static const String RTCEVENTLOG_OUTPUT_DIR_NAME = "rtc_event_log";
 
-  final RTCVideoRenderer _videoRenderer;
-
   /*private*/
   final PeerConnectionParameters peerConnectionParameters;
 
@@ -98,34 +99,337 @@ class PeerConnectionClient {
   /*private*/
   RTCPeerConnection peerConnection;
 
+  /*private*/
+  MediaStream videoSource;
+
+  /*private*/
+  MediaStream audioSource;
+
+  /*private*/
+  bool preferIsac;
+
+  /*private*/
+  bool isError;
+
+  RTCVideoRenderer _remoteRenderer;
+  RTCVideoRenderer _localRenderer;
+
+  /*private*/
+  SignalingParameters signalingParameters;
+
+  /*private*/
+  int videoWidth;
+
+  /*private*/
+  int videoHeight;
+
+  /*private*/
+  int videoFps;
+
+  /*private*/
+  Map<String, dynamic> audioConstraints;
+
+  /*private*/
+  Map<String, dynamic> sdpMediaConstraints;
+
   // Queued remote ICE candidates are consumed only after both local and
   // remote descriptions are set. Similarly local ICE candidates are sent to
   // remote peer after both local and remote description are set.
   /*private*/
   List<RTCIceCandidate> queuedRemoteCandidates;
+  bool isInitiator;
+
+  /*private*/
+  RTCSessionDescription localSdp; // either offer or answer SDP
+
+  /*private*/
+  RTCDataChannel dataChannel;
 
   /*private*/
   final bool dataChannelEnabled;
 
-  PeerConnectionClient(
-      this._videoRenderer, this.peerConnectionParameters, this.events)
+  PeerConnectionClient(this.peerConnectionParameters, this.events)
       : dataChannelEnabled =
             peerConnectionParameters._dataChannelParameters != null {
     print("D $_ Preferred video codec: " +
         getSdpVideoCodecName(peerConnectionParameters));
+    isInitiator = false;
+    // Check if ISAC is used by default.
+    preferIsac = peerConnectionParameters.audioCodec != null &&
+        peerConnectionParameters.audioCodec == AUDIO_CODEC_ISAC;
   }
 
-  void createPeerConnection(final SignalingParameters signalingParameters) {
+  Future<void> createPeerConnection(
+      final RTCVideoRenderer remoteRenderer,
+      final RTCVideoRenderer localRenderer,
+      final SignalingParameters signalingParameters) {
+    if (peerConnectionParameters == null) {
+      print("E $_ Creating peer connection without initializing factory.");
+      return Future.value();
+    }
+    this.localSdp = null;
+    this.isError = false;
+    this._remoteRenderer = remoteRenderer;
+    this._localRenderer = localRenderer;
+    this.signalingParameters = signalingParameters;
 
+    _createMediaConstraintsInternal();
+    return _createPeerConnectionInternal();
   }
 
-  void close() {}
+  void close() {
+    closeInternal();
+  }
+
   bool _isVideoCallEnabled() {
-    return peerConnectionParameters.videoCallEnabled/* && videoCapturer != null*/;
+    return peerConnectionParameters
+        .videoCallEnabled /* && videoCapturer != null*/;
   }
-  void _createPeerConnectionInternal() {
 
+  Future<void> createOffer() {
+    if (peerConnection != null && !isError) {
+      print("D $_ PC Create OFFER");
+      return peerConnection
+          .createOffer(sdpMediaConstraints)
+          .then(_onCreateSuccess)
+          .catchError(_onCreateFailure);
+    }
+    return Future.error("Already on error");
   }
+
+  Future<void> createAnswer() {
+    if (peerConnection != null && !isError) {
+      print("D $_ PC create ANSWER");
+      isInitiator = false;
+      return peerConnection
+          .createAnswer(sdpMediaConstraints)
+          .then(_onCreateSuccess)
+          .catchError(_onCreateFailure);
+    }
+    return Future.error("Already on error");
+  }
+
+  Future<void> addRemoteIceCandidate(final RTCIceCandidate candidate) {
+    if (peerConnection != null && !isError) {
+      if (queuedRemoteCandidates != null) {
+        queuedRemoteCandidates.add(candidate);
+      } else {
+        return peerConnection.addCandidate(candidate);
+      }
+    }
+    return Future.value();
+  }
+
+  Future<void> removeRemoteIceCandidates(
+      final List<RTCIceCandidate> candidates) {
+    if (peerConnection == null || isError) {
+      return Future.error("Already on error");
+    }
+    // Drain the queued remote candidates if there is any so that
+    // they are processed in the proper order.
+    drainCandidates();
+//    peerConnection.removeCandidates(candidates);
+    return Future.value();
+  }
+
+  Future<void> setRemoteDescription(final RTCSessionDescription sdp) {
+    if (peerConnection == null || isError) {
+      return Future.error("Already on error");
+    }
+    String sdpDescription = sdp.sdp;
+    if (preferIsac) {
+      sdpDescription = preferCodec(sdpDescription, AUDIO_CODEC_ISAC, true);
+    }
+    if (_isVideoCallEnabled()) {
+      sdpDescription = preferCodec(sdpDescription,
+          getSdpVideoCodecName(peerConnectionParameters), false);
+    }
+    if (peerConnectionParameters.audioStartBitrate > 0) {
+      sdpDescription = setStartBitrate(AUDIO_CODEC_OPUS, false, sdpDescription,
+          peerConnectionParameters.audioStartBitrate);
+    }
+    print("D $_ Set remote SDP.");
+    RTCSessionDescription sdpRemote =
+        new RTCSessionDescription(sdpDescription, sdp.type);
+    return peerConnection
+        .setRemoteDescription(sdpRemote)
+        .then((_) => _onSetSuccess())
+        .catchError(_onSetFailure);
+  }
+
+  void _reportError(final String errorMessage) {
+    print("E $_ PeerConnection error: " + errorMessage);
+    if (!isError) {
+      events.onPeerConnectionError(errorMessage);
+      isError = true;
+    }
+  }
+
+  void _createMediaConstraintsInternal() {
+    // Create video constraints if video call is enabled.
+    if (_isVideoCallEnabled()) {
+      videoWidth = peerConnectionParameters.videoWidth;
+      videoHeight = peerConnectionParameters.videoHeight;
+      videoFps = peerConnectionParameters.videoFps;
+
+      // If video resolution is not specified, default to HD.
+      if (videoWidth == 0 || videoHeight == 0) {
+        videoWidth = HD_VIDEO_WIDTH;
+        videoHeight = HD_VIDEO_HEIGHT;
+      }
+
+      // If fps is not specified, default to 30.
+      if (videoFps == 0) {
+        videoFps = 30;
+      }
+      print("D $_ Capturing format: ${videoWidth}x$videoHeight@$videoFps");
+    }
+
+    // Create audio constraints.
+    audioConstraints = <String, dynamic>{
+      // added for audio performance measurements
+      if (peerConnectionParameters.noAudioProcessing)
+        "mandatory": {
+          AUDIO_ECHO_CANCELLATION_CONSTRAINT: "false",
+          AUDIO_AUTO_GAIN_CONTROL_CONSTRAINT: "false",
+          AUDIO_HIGH_PASS_FILTER_CONSTRAINT: "false",
+          AUDIO_NOISE_SUPPRESSION_CONSTRAINT: "false",
+        }
+      else
+        "mandatory": {},
+      "optional": [],
+    };
+
+    // Create SDP constraints.
+    sdpMediaConstraints = <String, dynamic>{
+      "mandatory": {
+        "OfferToReceiveAudio": "true",
+        "OfferToReceiveVideo": _isVideoCallEnabled().toString(),
+      },
+      "optional": [],
+    };
+  }
+
+  Future<void> _createPeerConnectionInternal() async {
+    if (isError) {
+      print("E $_ PeerConnection factory is not created");
+      return;
+    }
+    print("D $_ Create peer connection.");
+    queuedRemoteCandidates = [];
+
+    Map<String, dynamic> configuration = {
+      "iceServers": signalingParameters.iceServers,
+    };
+    peerConnection = await f.createPeerConnection(configuration, {});
+    peerConnection.onIceCandidate = events.onIceCandidate;
+    peerConnection.onSignalingState = (state) {
+      print("D $_ SignalingState: $state");
+    };
+    peerConnection.onIceConnectionState = (newState) {
+      print("D $_ IceConnectionState: $newState");
+      if (newState == RTCIceConnectionState.RTCIceConnectionStateConnected) {
+        events.onIceConnected();
+      } else if (newState ==
+          RTCIceConnectionState.RTCIceConnectionStateDisconnected) {
+        events.onIceDisconnected();
+      } else if (newState ==
+          RTCIceConnectionState.RTCIceConnectionStateFailed) {
+        _reportError("ICE connection failed.");
+      }
+    };
+    peerConnection.onIceGatheringState = (newState) {
+      print("D $_ IceGatheringState: $newState");
+    };
+//    peerConnection.onIceGatheringState = (newState) {
+//      print("D $_ IceGatheringState: $newState");
+//    };
+    peerConnection.onAddStream = (stream) {
+      print("D $_ onAddStream: $stream");
+      _remoteRenderer.srcObject = stream;
+    };
+    peerConnection.onRemoveStream = (stream) {
+      print("D $_ onRemoveStream: $stream");
+      stream?.dispose();
+      _remoteRenderer.srcObject = null;
+    };
+    peerConnection.onDataChannel = (dc) {
+      print("D $_ New Data channel " /* + dc.label*/);
+
+      if (!dataChannelEnabled) return;
+
+      dc.onDataChannelState = (newState) {
+        print(
+            "D $_ Data channel state changed: $newState" /* + dc.label() + ": " + dc.state()*/);
+      };
+      dc.onMessage = (buffer) {
+        if (buffer.isBinary) {
+          print("D $_ Received binary msg over ");
+          return;
+        }
+
+//        ByteBuffer data = buffer.data;
+//        final byte[] bytes = new byte[data.capacity()];
+//        data.get(bytes);
+        String strData = buffer.text;
+        print("D $_ Got msg: " + strData + " over ");
+      };
+    };
+
+    if (dataChannelEnabled) {
+      print("D $_ Creating data channel....");
+      final init = RTCDataChannelInit();
+      init.ordered = peerConnectionParameters._dataChannelParameters.ordered;
+      init.maxRetransmitTime =
+          peerConnectionParameters._dataChannelParameters.maxRetransmitTimeMs;
+      init.maxRetransmits =
+          peerConnectionParameters._dataChannelParameters.maxRetransmits;
+      init.protocol = peerConnectionParameters._dataChannelParameters.protocol;
+      init.negotiated =
+          peerConnectionParameters._dataChannelParameters.negotiated;
+      init.id = peerConnectionParameters._dataChannelParameters.id;
+      dataChannel =
+          await peerConnection.createDataChannel("ApprtcDemo data", init);
+      print("D $_ Data channel created.");
+    }
+
+    isInitiator = false;
+
+    if (_isVideoCallEnabled()) {
+      final Map<String, dynamic> mediaConstraints = {
+        "audio": false,
+        "video": {
+          "mandatory": {
+            "minWidth": '640',
+            // Provide your own width, height and frame rate here
+            "minHeight": '480',
+            "minFrameRate": '30',
+          },
+          "facingMode": "user",
+          "optional": [],
+        }
+      };
+      return navigator.getUserMedia(mediaConstraints).then((media) {
+        return peerConnection
+            .addStream(_localRenderer.srcObject = videoSource = media);
+      });
+    }
+    print("D $_ Peer connection created.");
+  }
+
+  void closeInternal() {
+    peerConnection?.dispose();
+    peerConnection = null;
+    videoSource?.dispose();
+    videoSource = null;
+    audioSource?.dispose();
+    audioSource = null;
+    _localRenderer = null;
+    _remoteRenderer = null;
+    print("D $_ Closing peer connection done.");
+    events.onPeerConnectionClosed();
+  }
+
   static String getSdpVideoCodecName(PeerConnectionParameters parameters) {
     switch (parameters.videoCodec) {
       case VIDEO_CODEC_VP8:
@@ -322,6 +626,77 @@ class PeerConnectionClient {
       queuedRemoteCandidates = null;
     }
   }
+
+  void _onCreateSuccess(final RTCSessionDescription origSdp) async {
+    if (localSdp != null) {
+      _reportError("Multiple SDP create.");
+      return;
+    }
+    String sdpDescription = origSdp.sdp;
+    if (preferIsac) {
+      sdpDescription = preferCodec(sdpDescription, AUDIO_CODEC_ISAC, true);
+    }
+    if (_isVideoCallEnabled()) {
+      sdpDescription = preferCodec(sdpDescription,
+          getSdpVideoCodecName(peerConnectionParameters), false);
+    }
+    final RTCSessionDescription sdp =
+        new RTCSessionDescription(sdpDescription, origSdp.type);
+    localSdp = sdp;
+    if (!isError) {
+      print("D $_ Set local SDP from " + sdp.type);
+      await peerConnection
+          .setLocalDescription(sdp)
+          .then((_) => _onSetSuccess())
+          .catchError(_onSetFailure);
+    }
+  }
+
+  void _onCreateFailure(e, s) {
+    _reportError("createSDP error: $e" + (s != null ? "\n$s" : ""));
+  }
+
+  void _onSetSuccess() async {
+    if (peerConnection == null || isError) {
+      return;
+    }
+    if (isInitiator) {
+      // For offering peer connection we first create offer and set
+      // local SDP, then after receiving answer set remote SDP.
+      await peerConnection.getRemoteDescription().then((sdp) {
+        if (sdp == null) {
+          // We've just set our local SDP so time to send it.
+          print("D $_ Local SDP set successfully");
+          events.onLocalDescription(localSdp);
+        } else {
+          // We've just set remote description, so drain remote
+          // and send local ICE candidates.
+          print("D $_ Remote SDP set successfully");
+          drainCandidates();
+        }
+      });
+    } else {
+      // For answering peer connection we set remote SDP and then
+      // create answer and set local SDP.
+      await peerConnection.getLocalDescription().then((sdp) {
+        if (sdp != null) {
+          // We've just set our local SDP so time to send it, drain
+          // remote and send local ICE candidates.
+          print("D $_ Local SDP set successfully");
+          events.onLocalDescription(localSdp);
+          drainCandidates();
+        } else {
+          // We've just set remote SDP - do nothing for now -
+          // answer will be created soon.
+          print("D $_ Remote SDP set successfully");
+        }
+      }).catchError((e) {});
+    }
+  }
+
+  void _onSetFailure(final e, s) {
+    _reportError("setSDP error: $e" + (s != null ? "\n$s" : ""));
+  }
 }
 
 ///
@@ -345,9 +720,9 @@ class DataChannelParameters {
   });
 }
 
-/**
- * Peer connection parameters.
- */
+///
+/// Peer connection parameters.
+///
 class PeerConnectionParameters {
   final bool videoCallEnabled;
   final bool loopback;

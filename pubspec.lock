@@ -84,9 +84,11 @@ packages:
   flutter_webrtc:
     dependency: "direct main"
     description:
-      name: flutter_webrtc
-      url: "https://pub.dartlang.org"
-    source: hosted
+      path: "."
+      ref: HEAD
+      resolved-ref: "119be9fd1403a46fc536fe6c069c34e89d55dde7"
+      url: "https://github.com/cloudwebrtc/flutter-webrtc.git"
+    source: git
     version: "0.2.8"
   image:
     dependency: transitive

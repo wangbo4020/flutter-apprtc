@@ -62,19 +62,19 @@ class RoomParametersFetcher {
       String wssPostUrl = roomJson["wss_post_url"];
       bool initiator = _parseBool(roomJson["is_initiator"]);
       if (!initiator) {
-
         iceCandidates = [];
         var messages = roomJson["messages"];
         for (int i = 0; i < messages.length; ++i) {
           String messageString = messages[i];
+          if (messageString?.isNotEmpty != true) continue;
           var message = jsonDecode(messageString);
           String messageType = message["type"];
           print("d $_ GAE->C #$i : " + messageString);
           if (messageType == "offer") {
-            offerSdp = new RTCSessionDescription(messageType, message["sdp"]);
+            offerSdp = new RTCSessionDescription(message["sdp"], messageType);
           } else if (messageType == "candidate") {
             RTCIceCandidate candidate = new RTCIceCandidate(
-                message["id"], message["label"], message["candidate"]);
+                message["candidate"], message["id"], message["label"]);
             iceCandidates.add(candidate);
           } else {
             print("e $_ Unknown message: " + messageString);
@@ -111,8 +111,8 @@ class RoomParametersFetcher {
       SignalingParameters params = new SignalingParameters(iceServers,
           initiator, clientId, wssUrl, wssPostUrl, offerSdp, iceCandidates);
       return params;
-    } catch (e) {
-      return Future.error(e);
+    } catch (e, s) {
+      return Future.error(e, s);
 //    events.onSignalingParametersError("Room JSON parsing error: " + e.toString());
     }
   }
@@ -127,7 +127,10 @@ class RoomParametersFetcher {
         "url": "turn:49.234.159.207:3478",
         "username": "xiaofa",
         "credential": "123456",
-      }
+      },
+      {"url": "stun:stun.ekiga.net"},
+      {"url": "stun:stun.ekiga.net"},
+      {"url": "stun:stun.ideasip.com"},
     ];
     List<Map<String, dynamic>> turnServers = [];
     print("d $_ Request TURN from: " + url);
@@ -192,7 +195,7 @@ class RoomParametersFetcher {
     if (value is bool) return value;
     if (value == "true") {
       return true;
-    } else if (value == "false"){
+    } else if (value == "false") {
       return false;
     }
     throw FormatException("$value is not bool");

@@ -158,7 +158,7 @@ class WebSocketRTCClient implements AppRTCClient {
     if (!_connectionParameters.loopback &&
         !signalingParameters.initiator &&
         signalingParameters.offerSdp == null) {
-      print("w $_ No offer SDP in room response.");
+      print("W $_ No offer SDP in room response.");
     }
     _initiator = signalingParameters.initiator;
     _messageUrl = _getMessageUrl(_connectionParameters, signalingParameters);
@@ -189,14 +189,15 @@ class WebSocketRTCClient implements AppRTCClient {
       _reportError("Sending offer SDP in non connected state.");
       return;
     }
-    final json = <String, String>{};
-    json["sdp"] = sdp.sdp;
-    json["type"] = "offer";
+    final json = <String, String>{
+      "sdp": sdp.sdp,
+      "type": "offer",
+    };
     _sendPostMessage(MessageType.MESSAGE, _messageUrl, jsonEncode(json));
     if (_connectionParameters.loopback) {
       // In loopback mode rename this offer to answer and route it back.
       RTCSessionDescription sdpAnswer =
-          new RTCSessionDescription("answer", sdp.sdp);
+          new RTCSessionDescription(sdp.sdp, "answer");
       _events.onRemoteDescription(sdpAnswer);
     }
   }
@@ -278,20 +279,20 @@ class WebSocketRTCClient implements AppRTCClient {
     String errorText = json["error"];
     if (msgText.length > 0) {
       json = jsonDecode(msgText);
-      String type = json.optString("type");
+      String type = json["type"];
       if (type == "candidate") {
         _events.onRemoteIceCandidate(_toDartCandidate(json));
       } else if (type == "remove-candidates") {
         var candidateArray = json["candidates"];
         List<RTCIceCandidate> candidates = [];
         for (int i = 0; i < candidateArray.length(); ++i) {
-          candidates[i] = _toDartCandidate(candidateArray.getJSONObject(i));
+          candidates[i] = _toDartCandidate(candidateArray[i]);
         }
         _events.onRemoteIceCandidatesRemoved(candidates);
       } else if (type == "answer") {
         if (_initiator) {
           RTCSessionDescription sdp =
-              new RTCSessionDescription(type, json["sdp"]);
+              new RTCSessionDescription(json["sdp"], type);
           _events.onRemoteDescription(sdp);
         } else {
           _reportError("Received answer for call initiator: " + msg);
@@ -299,7 +300,7 @@ class WebSocketRTCClient implements AppRTCClient {
       } else if (type == "offer") {
         if (!_initiator) {
           RTCSessionDescription sdp =
-              new RTCSessionDescription(type, json["sdp"]);
+              new RTCSessionDescription(json["sdp"], type);
           _events.onRemoteDescription(sdp);
         } else {
           _reportError("Received offer for call receiver: " + msg);
@@ -347,7 +348,9 @@ class WebSocketRTCClient implements AppRTCClient {
     print("d $_ C->GAE: " + logInfo);
     try {
       final req = await HttpClient().openUrl("POST", Uri.parse(url));
-
+      if (message?.isNotEmpty == true) {
+        req.add(utf8.encode(message));
+      }
       final resp = await req.close();
       if (resp.statusCode != HttpStatus.ok) {
         throw Exception("Non-200 response to POST to URL: " +
@@ -379,6 +382,6 @@ class WebSocketRTCClient implements AppRTCClient {
 
   // Converts a JSON candidate to a Java object.
   RTCIceCandidate _toDartCandidate(Map json) {
-    return RTCIceCandidate(json["id"], json["label"], json["candidate"]);
+    return RTCIceCandidate(json["candidate"], json["id"], json["label"]);
   }
 }

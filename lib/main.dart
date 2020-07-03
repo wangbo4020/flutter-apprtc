@@ -63,29 +63,57 @@ class _MyHomePageState extends State<MyHomePage>
   String _button;
   IconData _icon;
 
-  RTCVideoRenderer _renderer;
+  RTCVideoRenderer _localRenderer;
+  RTCVideoRenderer _remoteRenderer;
 
   AppRTCClient _client;
   PeerConnectionClient _conn;
+  SignalingParameters _signalingParameters;
+  PeerConnectionParameters _peerConnectionParameters;
+  DateTime _callStartedTime;
 
   @override
   void initState() {
     super.initState();
     _logs = <String>[];
     _setCalling(false);
-    _renderer = RTCVideoRenderer()..initialize();
+    _localRenderer = RTCVideoRenderer()..initialize();
+    _remoteRenderer = RTCVideoRenderer()..initialize();
     _client = WebSocketRTCClient(this);
     _conn = PeerConnectionClient(
-        _renderer,
-        PeerConnectionParameters(
+        _peerConnectionParameters = PeerConnectionParameters(
           videoCallEnabled: true,
           loopback: false,
           tracing: false,
-          videoWidth: 720,
-          videoHeight: 1280,
+          videoWidth: 1080,
+          videoHeight: 2160,
+          videoFps: 0,
+          videoMaxBitrate: 0,
+          videoCodec: "VP8",
+          videoFlexfecEnabled: false,
+          videoCodecHwAcceleration: true,
+          audioStartBitrate: 0,
+          audioCodec: "OPUS",
+          noAudioProcessing: false,
+          aecDump: false,
+          saveInputAudioToFile: false,
+          useOpenSLES: false,
+          disableBuiltInAEC: false,
+          disableBuiltInAGC: false,
+          disableBuiltInNS: false,
+          disableWebRtcAGCAndHPF: false,
+          enableRtcEventLog: false,
+          dataChannelParameters: DataChannelParameters(
+            ordered: true,
+            maxRetransmitTimeMs: -1,
+            maxRetransmits: -1,
+            protocol: "",
+            negotiated: false,
+            id: 1,
+          ),
         ),
         this);
-    _roomIdController = TextEditingController();
+    _roomIdController = TextEditingController(text:"112233");
   }
 
   void _setCalling(bool calling) {
@@ -107,7 +135,8 @@ class _MyHomePageState extends State<MyHomePage>
   @override
   void dispose() {
     _stream?.dispose();
-    _renderer.dispose();
+    _localRenderer.dispose();
+    _remoteRenderer.dispose();
     _conn.close();
     _client.disconnectFromRoom();
     super.dispose();
@@ -152,6 +181,7 @@ class _MyHomePageState extends State<MyHomePage>
                 Expanded(
                   child: TextField(
                     controller: _roomIdController,
+                    enabled: _calling == false,
                   ),
                 ),
                 OutlineButton.icon(
@@ -177,7 +207,11 @@ class _MyHomePageState extends State<MyHomePage>
             Expanded(
               child: Stack(
                 children: <Widget>[
-                  RTCVideoView(_renderer),
+
+                  Column(children: <Widget>[
+                    Expanded(child: RTCVideoView(_remoteRenderer)),
+                    Expanded(child: RTCVideoView(_localRenderer)),
+                  ],),
                   ListView.builder(
                     itemBuilder: (context, i) => Text(_logs[i]),
                     itemCount: _logs.length,
@@ -192,6 +226,7 @@ class _MyHomePageState extends State<MyHomePage>
   }
 
   void _makeCall() {
+    _callStartedTime = DateTime.now();
     _client.connectToRoom(RoomConnectionParameters.simple(
         "https://appr.tc", _roomIdController.text, false));
     setState(() {
@@ -200,33 +235,23 @@ class _MyHomePageState extends State<MyHomePage>
   }
 
   void _hangUp() {
+    _conn?.close();
     _client.disconnectFromRoom();
     _stream?.dispose();
-    _renderer.srcObject = null;
-  }
-
-  @override
-  void onChannelClose() {
-    setState(() {
-      _setCalling(false);
-      _logs.add("onChannelClose");
-    });
-  }
-
-  @override
-  void onChannelError(String description) {
-    setState(() {
-      _setCalling(false);
-      _logs.add("onChannelError: $description");
-    });
+    _remoteRenderer.srcObject = null;
   }
 
   MediaStream _stream;
 
   @override
-  void onConnectedToRoom(SignalingParameters params) {
+  void reassemble() {
+    super.reassemble();
+  }
+
+  @override
+  void onConnectedToRoom(SignalingParameters params) async {
     if (!mounted) return;
-    try {
+    /*try {
       final Map<String, dynamic> mediaConstraints = {
         "audio": false,
         "video": {
@@ -240,12 +265,45 @@ class _MyHomePageState extends State<MyHomePage>
           "optional": [],
         }
       };
-      navigator.getDisplayMedia(mediaConstraints).then((stream) {
+      navigator.getUserMedia(mediaConstraints).then((stream) {
         _stream = stream;
-        _renderer.srcObject = _stream;
+        _remoteRenderer.srcObject = _stream;
+        setState(() {
+          _setCalling(true);
+        });
       });
     } catch (e) {
       print(e.toString());
+      setState(() {
+        _setCalling(false);
+      });
+    }
+
+    if (1 == 1) return;*/
+    _signalingParameters = params;
+
+    await _conn.createPeerConnection(_remoteRenderer, _localRenderer, params);
+    _logAndToast("Initiator is ${params.initiator}");
+    if (params.initiator) {
+      _logAndToast("Creating OFFER...");
+      // Create offer. Offer SDP will be sent to answering client in
+      // PeerConnectionEvents.onLocalDescription event.
+      await _conn.createOffer();
+    } else {
+      if (params.offerSdp != null) {
+        await _conn.setRemoteDescription(params.offerSdp);
+        _logAndToast("Creating ANSWER 1 ...");
+        // Create answer. Answer SDP will be sent to offering client in
+        // PeerConnectionEvents.onLocalDescription event.
+        await _conn.createAnswer();
+      }
+
+      if (params.iceCandidates != null) {
+        // Add remote ICE candidates from room.
+        for (RTCIceCandidate iceCandidate in params.iceCandidates) {
+          await _conn.addRemoteIceCandidate(iceCandidate);
+        }
+      }
     }
     setState(() {
       _setCalling(true);
@@ -254,24 +312,116 @@ class _MyHomePageState extends State<MyHomePage>
   }
 
   @override
-  void onRemoteDescription(RTCSessionDescription sdp) {
+  void onRemoteDescription(RTCSessionDescription sdp) async {
+
+    if (_conn == null) {
+      print("E Received remote SDP for non-initilized peer connection.");
+      return;
+    }
+    final delta = DateTime.now().difference(_callStartedTime);
+    _logAndToast("Received remote " + sdp.type + ", delay=${delta.inMilliseconds}ms");
+    await _conn.setRemoteDescription(sdp);
+    if (!_signalingParameters.initiator) {
+      _logAndToast("Creating ANSWER 2 ...");
+      // Create answer. Answer SDP will be sent to offering client in
+      // PeerConnectionEvents.onLocalDescription event.
+      await _conn.createAnswer();
+    }
     setState(() {
-      _logs.add("onRemoteDescription");
+//      _logs.add("onRemoteDescription");
     });
   }
 
   @override
   void onRemoteIceCandidate(RTCIceCandidate candidate) {
+    if (_conn == null) {
+      _logAndToast("E Received ICE candidate for a non-initialized peer connection.");
+      return;
+    }
+    _conn.addRemoteIceCandidate(candidate);
     setState(() {
-      _logs.add("onRemoteIceCandidate");
+//      _logs.add("onRemoteIceCandidate");
     });
   }
 
   @override
   void onRemoteIceCandidatesRemoved(List<RTCIceCandidate> candidates) {
+    if (_conn == null) {
+      _logAndToast("E Received ICE candidate removals for a non-initialized peer connection.");
+      return;
+    }
+    _conn.removeRemoteIceCandidates(candidates);
     setState(() {
-      _logs.add("onRemoteIceCandidatesRemoved");
+//      _logs.add("onRemoteIceCandidatesRemoved");
     });
+  }
+
+  @override
+  void onChannelClose() {
+    _disconnect();
+    _logAndToast("Remote end hung up; dropping PeerConnection");
+    setState(() {
+      _setCalling(false);
+//      _logs.add("onChannelClose");
+    });
+  }
+
+  @override
+  void onChannelError(String description) {
+    setState(() {
+      _setCalling(false);
+      _logs.add("onChannelError: $description");
+    });
+  }
+
+  // Disconnect from remote resources, dispose of local resources, and exit.
+  void _disconnect() {
+    _conn?.close();
+    _client.disconnectFromRoom();
+  }
+
+  // -----Implementation of PeerConnectionClient.PeerConnectionEvents.---------
+  // Send local peer connection SDP and ICE candidates to remote party.
+  // All callbacks are invoked from peer connection client looper thread and
+  // are routed to UI thread.
+
+  @override
+  void onLocalDescription(RTCSessionDescription sdp) {
+
+    if (_client != null) {
+      final delta = DateTime.now().difference(_callStartedTime);
+      _logAndToast("Sending " + sdp.type + ", delay=${delta.inMilliseconds}ms");
+      if (_signalingParameters.initiator) {
+        _client.sendOfferSdp(sdp);
+      } else {
+        _client.sendAnswerSdp(sdp);
+      }
+    }
+    if (_peerConnectionParameters.videoMaxBitrate > 0) {
+//      print("D Set video maximum bitrate: ${_peerConnectionParameters.videoMaxBitrate}");
+//      _conn.setVideoMaxBitrate(_peerConnectionParameters.videoMaxBitrate);
+    }
+  }
+
+  @override
+  void onIceCandidate(RTCIceCandidate candidate) {
+    _client?.sendLocalIceCandidate(candidate);
+  }
+
+  @override
+  void onIceCandidatesRemoved(List<RTCIceCandidate> candidates) {
+    _client?.sendLocalIceCandidateRemovals(candidates);
+  }
+
+  @override
+  void onIceConnected() {
+    final delta = DateTime.now().difference(_callStartedTime);
+    _logAndToast("ICE connected, delay=${delta.inMilliseconds}ms");
+  }
+
+  @override
+  void onIceDisconnected() {
+    _logAndToast("ICE disconnected");
   }
 
   @override
@@ -282,31 +432,6 @@ class _MyHomePageState extends State<MyHomePage>
   @override
   void onDisconnected() {
     // TODO: implement onDisconnected
-  }
-
-  @override
-  void onIceCandidate(RTCIceCandidate candidate) {
-    // TODO: implement onIceCandidate
-  }
-
-  @override
-  void onIceCandidatesRemoved(List<RTCIceCandidate> candidates) {
-    // TODO: implement onIceCandidatesRemoved
-  }
-
-  @override
-  void onIceConnected() {
-    // TODO: implement onIceConnected
-  }
-
-  @override
-  void onIceDisconnected() {
-    // TODO: implement onIceDisconnected
-  }
-
-  @override
-  void onLocalDescription(RTCSessionDescription sdp) {
-    // TODO: implement onLocalDescription
   }
 
   @override
@@ -322,5 +447,12 @@ class _MyHomePageState extends State<MyHomePage>
   @override
   void onPeerConnectionStatsReady(List<StatsReport> reports) {
     // TODO: implement onPeerConnectionStatsReady
+  }
+  
+  void _logAndToast(String msg) {
+    print(msg);
+    setState(() {
+      _logs.add(msg);
+    });
   }
 }
