@@ -1,4 +1,4 @@
-import 'package:flutter_webrtc/webrtc.dart';
+import 'package:flutter_webrtc/flutter_webrtc.dart';
 
 /// Struct holding the connection parameters of an AppRTC room.
 class RoomConnectionParameters {

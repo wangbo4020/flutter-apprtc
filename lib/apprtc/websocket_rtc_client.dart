@@ -1,12 +1,10 @@
 import 'dart:convert';
 import 'dart:io';
 
-import 'package:flutter_apprtc/apprtc/room_parameters_fetcher.dart';
-import 'package:flutter_webrtc/rtc_ice_candidate.dart';
-
-import 'package:flutter_webrtc/rtc_session_description.dart';
+import 'package:flutter_webrtc/flutter_webrtc.dart';
 
 import 'apprtc_client.dart';
+import 'room_parameters_fetcher.dart';
 import 'websocket_channel_client.dart';
 
 enum ConnectionState { NEW, CONNECTED, CLOSED, ERROR }

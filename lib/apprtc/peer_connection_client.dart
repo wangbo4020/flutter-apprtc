@@ -1,7 +1,4 @@
-import 'package:flutter_webrtc/webrtc.dart';
-import 'package:flutter_webrtc/rtc_peerconnection_factory.dart'
-    if (dart.library.js) 'package:flutter_webrtc/web/rtc_peerconnection_factory.dart'
-    as f;
+import 'package:flutter_webrtc/flutter_webrtc.dart';
 
 import 'apprtc_client.dart';
 
@@ -159,7 +156,7 @@ class PeerConnectionClient {
         peerConnectionParameters.audioCodec == AUDIO_CODEC_ISAC;
   }
 
-  Future<void> createPeerConnection(
+  Future<void> createPeerConn(
       final RTCVideoRenderer remoteRenderer,
       final RTCVideoRenderer localRenderer,
       final SignalingParameters signalingParameters) {
@@ -321,7 +318,7 @@ class PeerConnectionClient {
     Map<String, dynamic> configuration = {
       "iceServers": signalingParameters.iceServers,
     };
-    peerConnection = await f.createPeerConnection(configuration, {});
+    peerConnection = await createPeerConnection(configuration, {});
     peerConnection.onIceCandidate = events.onIceCandidate;
     peerConnection.onSignalingState = (state) {
       print("D $_ SignalingState: $state");

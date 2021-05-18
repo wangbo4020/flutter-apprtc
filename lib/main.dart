@@ -1,10 +1,9 @@
-import 'dart:io';
-
 import 'package:flutter/material.dart';
-import 'package:flutter_apprtc/apprtc/apprtc_client.dart';
-import 'package:flutter_apprtc/apprtc/peer_connection_client.dart';
-import 'package:flutter_apprtc/apprtc/websocket_rtc_client.dart';
-import 'package:flutter_webrtc/webrtc.dart';
+import 'package:flutter_webrtc/flutter_webrtc.dart';
+
+import 'apprtc/apprtc_client.dart';
+import 'apprtc/peer_connection_client.dart';
+import 'apprtc/websocket_rtc_client.dart';
 
 void main() {
   runApp(MyApp());
@@ -113,7 +112,7 @@ class _MyHomePageState extends State<MyHomePage>
           ),
         ),
         this);
-    _roomIdController = TextEditingController(text:"112233");
+    _roomIdController = TextEditingController(text: "112233");
   }
 
   void _setCalling(bool calling) {
@@ -207,11 +206,12 @@ class _MyHomePageState extends State<MyHomePage>
             Expanded(
               child: Stack(
                 children: <Widget>[
-
-                  Column(children: <Widget>[
-                    Expanded(child: RTCVideoView(_remoteRenderer)),
-                    Expanded(child: RTCVideoView(_localRenderer)),
-                  ],),
+                  Column(
+                    children: <Widget>[
+                      Expanded(child: RTCVideoView(_remoteRenderer)),
+                      Expanded(child: RTCVideoView(_localRenderer)),
+                    ],
+                  ),
                   ListView.builder(
                     itemBuilder: (context, i) => Text(_logs[i]),
                     itemCount: _logs.length,
@@ -282,7 +282,7 @@ class _MyHomePageState extends State<MyHomePage>
     if (1 == 1) return;*/
     _signalingParameters = params;
 
-    await _conn.createPeerConnection(_remoteRenderer, _localRenderer, params);
+    await _conn.createPeerConn(_remoteRenderer, _localRenderer, params);
     _logAndToast("Initiator is ${params.initiator}");
     if (params.initiator) {
       _logAndToast("Creating OFFER...");
@@ -313,13 +313,13 @@ class _MyHomePageState extends State<MyHomePage>
 
   @override
   void onRemoteDescription(RTCSessionDescription sdp) async {
-
     if (_conn == null) {
       print("E Received remote SDP for non-initilized peer connection.");
       return;
     }
     final delta = DateTime.now().difference(_callStartedTime);
-    _logAndToast("Received remote " + sdp.type + ", delay=${delta.inMilliseconds}ms");
+    _logAndToast(
+        "Received remote " + sdp.type + ", delay=${delta.inMilliseconds}ms");
     await _conn.setRemoteDescription(sdp);
     if (!_signalingParameters.initiator) {
       _logAndToast("Creating ANSWER 2 ...");
@@ -335,7 +335,8 @@ class _MyHomePageState extends State<MyHomePage>
   @override
   void onRemoteIceCandidate(RTCIceCandidate candidate) {
     if (_conn == null) {
-      _logAndToast("E Received ICE candidate for a non-initialized peer connection.");
+      _logAndToast(
+          "E Received ICE candidate for a non-initialized peer connection.");
       return;
     }
     _conn.addRemoteIceCandidate(candidate);
@@ -347,7 +348,8 @@ class _MyHomePageState extends State<MyHomePage>
   @override
   void onRemoteIceCandidatesRemoved(List<RTCIceCandidate> candidates) {
     if (_conn == null) {
-      _logAndToast("E Received ICE candidate removals for a non-initialized peer connection.");
+      _logAndToast(
+          "E Received ICE candidate removals for a non-initialized peer connection.");
       return;
     }
     _conn.removeRemoteIceCandidates(candidates);
@@ -387,7 +389,6 @@ class _MyHomePageState extends State<MyHomePage>
 
   @override
   void onLocalDescription(RTCSessionDescription sdp) {
-
     if (_client != null) {
       final delta = DateTime.now().difference(_callStartedTime);
       _logAndToast("Sending " + sdp.type + ", delay=${delta.inMilliseconds}ms");
@@ -448,7 +449,7 @@ class _MyHomePageState extends State<MyHomePage>
   void onPeerConnectionStatsReady(List<StatsReport> reports) {
     // TODO: implement onPeerConnectionStatsReady
   }
-  
+
   void _logAndToast(String msg) {
     print(msg);
     setState(() {
